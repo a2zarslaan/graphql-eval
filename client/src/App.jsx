@@ -1,115 +1,94 @@
-import { MaterialReactTable } from 'material-react-table';
-import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
-import axios from 'axios';
 import { useState } from 'react';
+import { MaterialReactTable } from 'material-react-table';
+import { ApolloClient, InMemoryCache, gql, useQuery } from '@apollo/client';
+import { Box } from '@mui/material';
 
-const queryClient = new QueryClient();
+// Apollo Client setup
+const client = new ApolloClient({
+  uri: 'http://localhost:4000/graphql',
+  cache: new InMemoryCache()
+});
 
-const fetchUsers = async ({ pageSize, cursor }) => {
-  const query = `
-    query GetUsers($first: Int, $after: String) {
-      users(first: $first, after: $after) {
-        edges {
-          node {
-            id
-            name
-            age
-            city
-          }
-          cursor
+// GraphQL query
+const GET_USERS = gql`
+  query GetUsers($first: Int, $after: String) {
+    users(first: $first, after: $after) {
+      edges {
+        node {
+          id
+          name
+          age
+          city
         }
-        pageInfo {
-          hasNextPage
-          endCursor
-        }
+        cursor
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
       }
     }
-  `;
+  }
+`;
 
-  const response = await axios.post('http://localhost:4000/graphql', {
-    query,
-    variables: {
-      first: pageSize,
-      after: cursor
-    }
+const PAGE_SIZE = 10;
+
+const App = () => {
+  const [pagination, setPagination] = useState({
+    pageIndex: 0,
+    pageSize: PAGE_SIZE,
   });
 
-  return response.data.data.users;
-};
-
-const UsersTable = () => {
-  const [cursor, setCursor] = useState(null);
-  const [pageSize, setPageSize] = useState(10);
-
-  const { data, isError, isFetching } = useQuery({
-    queryKey: ['users', cursor, pageSize],
-    queryFn: () => fetchUsers({ pageSize, cursor }),
-    keepPreviousData: true
+  const { data, loading, error } = useQuery(GET_USERS, {
+    variables: {
+      first: pagination.pageSize,
+      after: pagination.pageIndex > 0 ?
+        btoa(String((pagination.pageIndex * pagination.pageSize) - 1)) : null
+    },
+    client
   });
 
   const columns = [
     {
       accessorKey: 'id',
-      header: 'ID'
+      header: 'ID',
     },
     {
       accessorKey: 'name',
-      header: 'Name'
+      header: 'Name',
     },
     {
       accessorKey: 'age',
-      header: 'Age'
+      header: 'Age',
     },
     {
       accessorKey: 'city',
-      header: 'City'
-    }
+      header: 'City',
+    },
   ];
+
+  if (error) return <div>Error: {error.message}</div>;
 
   return (
     <MaterialReactTable
       columns={columns}
-      data={data?.edges.map(edge => edge.node) ?? []}
-      enablePagination
+      data={data?.users?.edges?.map(edge => edge.node) ?? []}
+      initialState={{ density: 'compact' }}
       manualPagination
-      rowCount={100000} // Set to a high number since we're using cursor-based pagination
+      onPaginationChange={setPagination}
       state={{
-        pagination: {
-          pageSize,
-          pageIndex: 0 // Always 0 since we're using cursor-based pagination
+        pagination,
+        isLoading: loading,
+      }}
+      pageCount={100} // Total pages estimation (1000 records / 10 per page)
+      renderTopToolbarCustomActions={() => (
+        <Box sx={{ pl: 2 }}>User Data Table</Box>
+      )}
+      muiLinearProgressProps={{
+        sx: {
+          display: loading ? 'block' : 'none',
         },
-        isLoading: isFetching
-      }}
-      onPaginationChange={(updater) => {
-        const newPagination = updater({
-          pageSize,
-          pageIndex: 0
-        });
-        setPageSize(newPagination.pageSize);
-        if (data?.pageInfo.endCursor) {
-          setCursor(data.pageInfo.endCursor);
-        }
-      }}
-      enableRowSelection={false}
-      enableMultiSort={false}
-      enableGlobalFilter={false}
-      muiTablePaginationProps={{
-        rowsPerPageOptions: [5, 10, 20],
-        showFirstButton: false,
-        showLastButton: false,
       }}
     />
-  );
-};
-
-const App = () => {
-  return (
-    <QueryClientProvider client={queryClient}>
-      <div style={{ padding: '20px' }}>
-        <h1>Users List</h1>
-        <UsersTable />
-      </div>
-    </QueryClientProvider>
   );
 };
 
