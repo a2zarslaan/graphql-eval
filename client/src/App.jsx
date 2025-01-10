@@ -1,15 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { MaterialReactTable } from 'material-react-table';
-import { ApolloClient, InMemoryCache, gql, useQuery } from '@apollo/client';
-import { Box } from '@mui/material';
+import { useQuery, gql } from '@apollo/client';
 
-// Apollo Client setup
-const client = new ApolloClient({
-  uri: 'http://localhost:4000/graphql',
-  cache: new InMemoryCache()
-});
-
-// GraphQL query
 const GET_USERS = gql`
   query GetUsers($first: Int, $after: String) {
     users(first: $first, after: $after) {
@@ -26,70 +18,81 @@ const GET_USERS = gql`
         hasNextPage
         endCursor
       }
+      totalCount
     }
   }
 `;
 
-const PAGE_SIZE = 10;
-
 const App = () => {
   const [pagination, setPagination] = useState({
     pageIndex: 0,
-    pageSize: PAGE_SIZE,
+    pageSize: 10,
   });
 
-  const { data, loading, error } = useQuery(GET_USERS, {
+  const { loading, error, data, refetch } = useQuery(GET_USERS, {
     variables: {
       first: pagination.pageSize,
-      after: pagination.pageIndex > 0 ?
-        btoa(String((pagination.pageIndex * pagination.pageSize) - 1)) : null
+      after: null,
     },
-    client
+    notifyOnNetworkStatusChange: true,
   });
 
-  const columns = [
-    {
-      accessorKey: 'id',
-      header: 'ID',
-    },
-    {
-      accessorKey: 'name',
-      header: 'Name',
-    },
-    {
-      accessorKey: 'age',
-      header: 'Age',
-    },
-    {
-      accessorKey: 'city',
-      header: 'City',
-    },
-  ];
+  useEffect(() => {
+    refetch({
+      first: pagination.pageSize,
+      after: pagination.pageIndex > 0 ? data?.users?.pageInfo?.endCursor : null,
+    });
+  }, [pagination.pageIndex, pagination.pageSize]);
 
-  if (error) return <div>Error: {error.message}</div>;
-
-  return (
-    <MaterialReactTable
-      columns={columns}
-      data={data?.users?.edges?.map(edge => edge.node) ?? []}
-      initialState={{ density: 'compact' }}
-      manualPagination
-      onPaginationChange={setPagination}
-      state={{
-        pagination,
-        isLoading: loading,
-      }}
-      pageCount={100} // Total pages estimation (1000 records / 10 per page)
-      renderTopToolbarCustomActions={() => (
-        <Box sx={{ pl: 2 }}>User Data Table</Box>
-      )}
-      muiLinearProgressProps={{
-        sx: {
-          display: loading ? 'block' : 'none',
-        },
-      }}
-    />
+  const columns = useMemo(
+    () => [
+      {
+        accessorKey: 'name',
+        header: 'Name',
+      },
+      {
+        accessorKey: 'age',
+        header: 'Age',
+      },
+      {
+        accessorKey: 'city',
+        header: 'City',
+      },
+    ],
+    []
   );
+
+  const tableData = useMemo(() => {
+    if (!data?.users?.edges) return [];
+    return data.users.edges.map(({ node }) => node);
+  }, [data]);
+
+  const table = {
+    columns,
+    data: tableData,
+    manualPagination: true,
+    muiToolbarAlertBannerProps: error
+      ? {
+        color: 'error',
+        children: 'Error loading data',
+      }
+      : undefined,
+    onPaginationChange: setPagination,
+    rowCount: data?.users?.totalCount ?? 0,
+    state: {
+      isLoading: loading,
+      pagination,
+      showAlertBanner: Boolean(error),
+      showProgressBars: loading,
+    },
+    getRowId: (row) => row.id,
+    initialState: {
+      density: 'comfortable',
+      pagination: { pageSize: 10, pageIndex: 0 }
+    },
+  };
+
+  return <MaterialReactTable {...table} />;
 };
 
 export default App;

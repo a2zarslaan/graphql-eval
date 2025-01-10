@@ -6,7 +6,8 @@ const {
   GraphQLString,
   GraphQLInt,
   GraphQLList,
-  GraphQLNonNull
+  GraphQLNonNull,
+  GraphQLBoolean
 } = require('graphql');
 const cors = require('cors');
 
@@ -14,14 +15,13 @@ const cors = require('cors');
 // Mock data generator
 const generateUsers = (count) => {
   return Array.from({ length: count }, (_, index) => ({
-    id: `user_${index + 1}`,
+    id: `user${index + 1}`,
     name: `User ${index + 1}`,
     age: 20 + Math.floor(Math.random() * 40),
     city: ['New York', 'London', 'Tokyo', 'Paris', 'Berlin'][Math.floor(Math.random() * 5)]
   }));
 };
 
-// Generate 1000 users for testing
 const users = generateUsers(1000);
 
 // Define User Type
@@ -35,12 +35,23 @@ const UserType = new GraphQLObjectType({
   }
 });
 
-// Define PageInfo Type
+// Define PageInfo Type (Fixed boolean type)
 const PageInfoType = new GraphQLObjectType({
   name: 'PageInfo',
   fields: {
-    hasNextPage: { type: GraphQLNonNull(GraphQLString) },
+    hasNextPage: { type: GraphQLNonNull(GraphQLBoolean) },
+    hasPreviousPage: { type: GraphQLNonNull(GraphQLBoolean) },
+    startCursor: { type: GraphQLString },
     endCursor: { type: GraphQLString }
+  }
+});
+
+// Define UserEdge Type
+const UserEdgeType = new GraphQLObjectType({
+  name: 'UserEdge',
+  fields: {
+    node: { type: GraphQLNonNull(UserType) },
+    cursor: { type: GraphQLNonNull(GraphQLString) }
   }
 });
 
@@ -49,17 +60,23 @@ const UserConnectionType = new GraphQLObjectType({
   name: 'UserConnection',
   fields: {
     edges: {
-      type: GraphQLNonNull(GraphQLList(GraphQLNonNull(new GraphQLObjectType({
-        name: 'UserEdge',
-        fields: {
-          node: { type: GraphQLNonNull(UserType) },
-          cursor: { type: GraphQLNonNull(GraphQLString) }
-        }
-      }))))
+      type: GraphQLNonNull(GraphQLList(GraphQLNonNull(UserEdgeType)))
     },
-    pageInfo: { type: GraphQLNonNull(PageInfoType) }
+    pageInfo: {
+      type: GraphQLNonNull(PageInfoType)
+    },
+    totalCount: {
+      type: GraphQLNonNull(GraphQLInt)
+    }
   }
 });
+
+// Cursor handling functions
+const toCursor = (index) => Buffer.from(`cursor:${index}`).toString('base64');
+const fromCursor = (cursor) => {
+  const value = Buffer.from(cursor, 'base64').toString('ascii');
+  return parseInt(value.split(':')[1], 10);
+};
 
 // Create Schema
 const schema = new GraphQLSchema({
@@ -70,32 +87,52 @@ const schema = new GraphQLSchema({
         type: UserConnectionType,
         args: {
           first: { type: GraphQLInt },
-          after: { type: GraphQLString }
+          after: { type: GraphQLString },
+          last: { type: GraphQLInt },
+          before: { type: GraphQLString }
         },
         resolve: (parent, args) => {
-          const { first = 10, after } = args;
+          const { first, after, last, before } = args;
 
-          let startIndex = 0;
-          if (after) {
-            const decodedCursor = Buffer.from(after, 'base64').toString('ascii');
-            startIndex = parseInt(decodedCursor) + 1;
+          if (first && last) {
+            throw new Error('Cannot specify both first and last');
           }
 
-          const selectedUsers = users.slice(startIndex, startIndex + first);
+          let startIndex = 0;
+          let endIndex = users.length;
+
+          if (after) {
+            startIndex = fromCursor(after) + 1;
+          }
+
+          if (before) {
+            endIndex = fromCursor(before);
+          }
+
+          if (first) {
+            endIndex = Math.min(startIndex + first, endIndex);
+          }
+
+          if (last) {
+            startIndex = Math.max(endIndex - last, startIndex);
+          }
+
+          const selectedUsers = users.slice(startIndex, endIndex);
 
           const edges = selectedUsers.map((user, index) => ({
             node: user,
-            cursor: Buffer.from(`${startIndex + index}`).toString('base64')
+            cursor: toCursor(startIndex + index)
           }));
 
           return {
             edges,
             pageInfo: {
-              hasNextPage: startIndex + first < users.length ? "true" : "false",
-              endCursor: edges.length > 0
-                ? edges[edges.length - 1].cursor
-                : null
-            }
+              hasNextPage: endIndex < users.length,
+              hasPreviousPage: startIndex > 0,
+              startCursor: edges.length > 0 ? edges[0].cursor : null,
+              endCursor: edges.length > 0 ? edges[edges.length - 1].cursor : null
+            },
+            totalCount: users.length
           };
         }
       }
@@ -103,9 +140,7 @@ const schema = new GraphQLSchema({
   })
 });
 
-// Create Express server
 const app = express();
-
 app.use(cors());
 
 app.use('/graphql', graphqlHTTP({
