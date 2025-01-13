@@ -11,8 +11,6 @@ const {
 } = require('graphql');
 const cors = require('cors');
 
-
-// Mock data generator
 const generateUsers = (count) => {
   return Array.from({ length: count }, (_, index) => ({
     id: `user${index + 1}`,
@@ -24,7 +22,6 @@ const generateUsers = (count) => {
 
 const users = generateUsers(1000);
 
-// Define User Type
 const UserType = new GraphQLObjectType({
   name: 'User',
   fields: {
@@ -35,7 +32,6 @@ const UserType = new GraphQLObjectType({
   }
 });
 
-// Define PageInfo Type (Fixed boolean type)
 const PageInfoType = new GraphQLObjectType({
   name: 'PageInfo',
   fields: {
@@ -46,7 +42,6 @@ const PageInfoType = new GraphQLObjectType({
   }
 });
 
-// Define UserEdge Type
 const UserEdgeType = new GraphQLObjectType({
   name: 'UserEdge',
   fields: {
@@ -55,30 +50,34 @@ const UserEdgeType = new GraphQLObjectType({
   }
 });
 
-// Define UserConnection Type
 const UserConnectionType = new GraphQLObjectType({
   name: 'UserConnection',
   fields: {
-    edges: {
-      type: GraphQLNonNull(GraphQLList(GraphQLNonNull(UserEdgeType)))
-    },
-    pageInfo: {
-      type: GraphQLNonNull(PageInfoType)
-    },
-    totalCount: {
-      type: GraphQLNonNull(GraphQLInt)
-    }
+    edges: { type: GraphQLNonNull(GraphQLList(GraphQLNonNull(UserEdgeType))) },
+    pageInfo: { type: GraphQLNonNull(PageInfoType) },
+    totalCount: { type: GraphQLNonNull(GraphQLInt) }
   }
 });
 
-// Cursor handling functions
-const toCursor = (index) => Buffer.from(`cursor:${index}`).toString('base64');
-const fromCursor = (cursor) => {
-  const value = Buffer.from(cursor, 'base64').toString('ascii');
-  return parseInt(value.split(':')[1], 10);
+const encodeCursor = (value) => Buffer.from(value.toString()).toString('base64');
+const decodeCursor = (cursor) => parseInt(Buffer.from(cursor, 'base64').toString('ascii'), 10);
+
+const validatePaginationArgs = (args) => {
+  const { first, last, after, before } = args;
+
+  if (first != null && last != null) {
+    throw new Error('Cannot specify both first and last.');
+  }
+
+  if (first != null && first < 0) {
+    throw new Error('First must be a non-negative integer.');
+  }
+
+  if (last != null && last < 0) {
+    throw new Error('Last must be a non-negative integer.');
+  }
 };
 
-// Create Schema
 const schema = new GraphQLSchema({
   query: new GraphQLObjectType({
     name: 'Query',
@@ -92,46 +91,52 @@ const schema = new GraphQLSchema({
           before: { type: GraphQLString }
         },
         resolve: (parent, args) => {
+          validatePaginationArgs(args);
           const { first, after, last, before } = args;
-
-          if (first && last) {
-            throw new Error('Cannot specify both first and last');
-          }
 
           let startIndex = 0;
           let endIndex = users.length;
 
+          // Handle cursors
           if (after) {
-            startIndex = fromCursor(after) + 1;
+            startIndex = decodeCursor(after) + 1;
+          }
+          if (before) {
+            endIndex = decodeCursor(before);
           }
 
-          if (before) {
-            endIndex = fromCursor(before);
-          }
+          // Calculate slice ranges
+          let sliceStart = startIndex;
+          let sliceEnd = endIndex;
 
           if (first) {
-            endIndex = Math.min(startIndex + first, endIndex);
+            sliceEnd = Math.min(startIndex + first, endIndex);
           }
-
           if (last) {
-            startIndex = Math.max(endIndex - last, startIndex);
+            sliceStart = Math.max(endIndex - last, startIndex);
+            sliceEnd = endIndex;
           }
 
-          const selectedUsers = users.slice(startIndex, endIndex);
+          // Get selected users
+          const selectedUsers = users.slice(sliceStart, sliceEnd);
 
+          // Create edges with cursors
           const edges = selectedUsers.map((user, index) => ({
             node: user,
-            cursor: toCursor(startIndex + index)
+            cursor: encodeCursor(sliceStart + index)
           }));
+
+          // Calculate page info
+          const pageInfo = {
+            hasNextPage: first ? sliceEnd < endIndex : false,
+            hasPreviousPage: last ? sliceStart > startIndex : startIndex > 0,
+            startCursor: edges.length > 0 ? edges[0].cursor : null,
+            endCursor: edges.length > 0 ? edges[edges.length - 1].cursor : null
+          };
 
           return {
             edges,
-            pageInfo: {
-              hasNextPage: endIndex < users.length,
-              hasPreviousPage: startIndex > 0,
-              startCursor: edges.length > 0 ? edges[0].cursor : null,
-              endCursor: edges.length > 0 ? edges[edges.length - 1].cursor : null
-            },
+            pageInfo,
             totalCount: users.length
           };
         }
